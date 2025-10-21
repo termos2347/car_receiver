@@ -2,161 +2,106 @@
 #include <Arduino.h>
 
 void Joystick::begin() {
-    // Настройка пинов управления
-    pinMode(hwConfig.THROTTLE_PIN, INPUT);
-    pinMode(hwConfig.STEERING_PIN, INPUT);
-    pinMode(hwConfig.JOYSTICK_BUTTON_PIN, INPUT_PULLUP);
+    // Настройка пинов первого джойстика
+    pinMode(config.JOYSTICK1_X_PIN, INPUT);
+    pinMode(config.JOYSTICK1_Y_PIN, INPUT);
+    pinMode(config.JOYSTICK1_BUTTON_PIN, INPUT_PULLUP);
+    
+    // Настройка пинов второго джойстика
+    pinMode(config.JOYSTICK2_X_PIN, INPUT);
+    pinMode(config.JOYSTICK2_Y_PIN, INPUT);
+    pinMode(config.JOYSTICK2_BUTTON_PIN, INPUT_PULLUP);
     
     // Настройка дополнительных кнопок
-    pinMode(hwConfig.GEAR_BUTTON_PIN, INPUT_PULLUP);
-    pinMode(hwConfig.TURBO_BUTTON_PIN, INPUT_PULLUP);
-    pinMode(hwConfig.MENU_BUTTON_PIN, INPUT_PULLUP);
+    pinMode(config.BUTTON3_PIN, INPUT_PULLUP);
+    pinMode(config.BUTTON4_PIN, INPUT_PULLUP);
     
     // Автокалибровка при запуске
     calibrate();
 }
 
 void Joystick::calibrate() {
-    Serial.println("🔧 Калибровка управления...");
-    calibrating = true;
+    Serial.println("🔧 Калибровка джойстиков...");
+    delay(100);
     
-    throttleCenter = steeringCenter = 0;
-    throttleMin = throttleMax = steeringMin = steeringMax = 0;
+    x1Center = y1Center = x2Center = y2Center = 0;
     
-    // Сбор калибровочных данных
-    for(int i = 0; i < Config::CALIBRATION_SAMPLES; i++) {
-        int throttle = analogRead(hwConfig.THROTTLE_PIN);
-        int steering = analogRead(hwConfig.STEERING_PIN);
-        
-        throttleCenter += throttle;
-        steeringCenter += steering;
-        
-        if (throttle < throttleMin || i == 0) throttleMin = throttle;
-        if (throttle > throttleMax || i == 0) throttleMax = throttle;
-        if (steering < steeringMin || i == 0) steeringMin = steering;
-        if (steering > steeringMax || i == 0) steeringMax = steering;
-        
+    // Усредняем несколько измерений для обоих джойстиков
+    for(int i = 0; i < 10; i++) {
+        x1Center += analogRead(config.JOYSTICK1_X_PIN);
+        y1Center += analogRead(config.JOYSTICK1_Y_PIN);
+        x2Center += analogRead(config.JOYSTICK2_X_PIN);
+        y2Center += analogRead(config.JOYSTICK2_Y_PIN);
         delay(10);
     }
     
-    throttleCenter /= Config::CALIBRATION_SAMPLES;
-    steeringCenter /= Config::CALIBRATION_SAMPLES;
+    x1Center /= 10;
+    y1Center /= 10;
+    x2Center /= 10;
+    y2Center /= 10;
     
     calibrated = true;
-    calibrating = false;
-    
-    Serial.printf("✅ Калибровка завершена:\n");
-    Serial.printf("   Газ: центр=%d, min=%d, max=%d\n", throttleCenter, throttleMin, throttleMax);
-    Serial.printf("   Рулевое: центр=%d, min=%d, max=%d\n", steeringCenter, steeringMin, steeringMax);
+    Serial.printf("✅ Центр Джойстик1: X=%d, Y=%d\n", x1Center, y1Center);
+    Serial.printf("✅ Центр Джойстик2: X=%d, Y=%d\n", x2Center, y2Center);
 }
 
 void Joystick::update() {
-    if (!calibrated || calibrating) return;
+    if (!calibrated) return;
     
-    // Чтение и фильтрация осей управления
-    int rawThrottle = readFilteredAnalog(hwConfig.THROTTLE_PIN);
-    int rawSteering = readFilteredAnalog(hwConfig.STEERING_PIN);
+    // Чтение и фильтрация осей первого джойстика
+    int rawX1 = readFilteredAnalog(config.JOYSTICK1_X_PIN);
+    int rawY1 = readFilteredAnalog(config.JOYSTICK1_Y_PIN);
     
-    // Преобразование в диапазон -512 до +512 относительно центра
-    int throttle = map(rawThrottle, throttleMin, throttleMax, -512, 512);
-    int steering = map(rawSteering, steeringMin, steeringMax, -512, 512);
+    // Чтение и фильтрация осей второго джойстика
+    int rawX2 = readFilteredAnalog(config.JOYSTICK2_X_PIN);
+    int rawY2 = readFilteredAnalog(config.JOYSTICK2_Y_PIN);
     
-    // Ограничение диапазона
-    throttle = constrain(throttle, -512, 512);
-    steering = constrain(steering, -512, 512);
-    
-    // Применение мертвой зоны и кривых
-    applyDeadZone(throttle);
-    applyDeadZone(steering);
-    applyCurves(throttle, steering);
-    
-    currentData.throttle = throttle;
-    currentData.steering = steering;
+    // Преобразование в диапазон -512 до +512
+    currentData.xAxis1 = constrain(map(rawX1, 0, 4095, -512, 512), -512, 512);
+    currentData.yAxis1 = constrain(map(rawY1, 0, 4095, -512, 512), -512, 512);
+    currentData.xAxis2 = constrain(map(rawX2, 0, 4095, -512, 512), -512, 512);
+    currentData.yAxis2 = constrain(map(rawY2, 0, 4095, -512, 512), -512, 512);
     
     // Чтение кнопок
-    currentData.button1 = !digitalRead(hwConfig.JOYSTICK_BUTTON_PIN);
+    currentData.button1 = !digitalRead(config.JOYSTICK1_BUTTON_PIN);
+    currentData.button2 = !digitalRead(config.JOYSTICK2_BUTTON_PIN);
     
-    // Обновление передачи и турбо-режима
-    updateGear();
-    updateTurbo();
+    // Чтение дополнительных кнопок
+    readButtons();
     
     // Расчет CRC
     currentData.crc = calculateCRC(currentData);
 }
 
-void Joystick::updateGear() {
-    bool currentButtonState = !digitalRead(hwConfig.GEAR_BUTTON_PIN);
-    
-    // Переключение передачи по нажатию кнопки
-    if (currentButtonState && !lastGearButtonState) {
-        currentGear = (currentGear == 1) ? 2 : 1;
-        Serial.printf("🔄 Передача: %s\n", currentGear == 1 ? "ВПЕРЕД" : "НАЗАД");
-    }
-    lastGearButtonState = currentButtonState;
-    
-    currentData.gear = currentGear;
-}
-
-void Joystick::updateTurbo() {
-    bool currentButtonState = !digitalRead(hwConfig.TURBO_BUTTON_PIN);
-    
-    // Включение/выключение турбо-режима
-    if (currentButtonState && !lastTurboButtonState) {
-        turboEnabled = !turboEnabled;
-        currentData.turbo = turboEnabled ? 1 : 0;
-        Serial.printf("💨 Турбо-режим: %s\n", turboEnabled ? "ВКЛ" : "ВЫКЛ");
-    }
-    lastTurboButtonState = currentButtonState;
-    
-    currentData.turbo = turboEnabled ? 1 : 0;
-}
-
-void Joystick::applyDeadZone(int& value) {
-    if (abs(value) < controlConfig.deadZone) {
-        value = 0;
-    } else if (value > 0) {
-        value = map(value, controlConfig.deadZone, 512, 0, controlConfig.maxThrottle);
-    } else {
-        value = map(value, -512, -controlConfig.deadZone, -controlConfig.maxThrottle, 0);
-    }
-}
-
-void Joystick::applyCurves(int& throttle, int& steering) {
-    // Применение кривой к газу
-    throttle = exponentialTransform(throttle, controlConfig.throttleCurve);
-    
-    // Применение экспоненциальной кривой к рулевому
-    if (controlConfig.exponentialSteering) {
-        steering = exponentialTransform(steering, 1.5);
-    }
-}
-
-int Joystick::exponentialTransform(int value, float curve) {
-    if (value == 0) return 0;
-    
-    float normalized = float(value) / 512.0;
-    float sign = normalized > 0 ? 1.0 : -1.0;
-    float result = powf(abs(normalized), curve) * sign;
-    
-    return int(result * 512);
-}
-
 void Joystick::readButtons() {
-    // Основная кнопка уже обработана в update()
-    currentData.button2 = !digitalRead(hwConfig.MENU_BUTTON_PIN);
+    currentData.buttons = 0;
+    
+    // Кнопка 3 (бит 0)
+    if (!digitalRead(config.BUTTON3_PIN)) {
+        currentData.buttons |= 0x01;
+    }
+    
+    // Кнопка 4 (бит 1)
+    if (!digitalRead(config.BUTTON4_PIN)) {
+        currentData.buttons |= 0x02;
+    }
+    
+    // Можно добавить больше кнопок здесь
+    // currentData.buttons |= 0x04; // Кнопка 5 (бит 2)
+    // currentData.buttons |= 0x08; // Кнопка 6 (бит 3)
 }
 
 int Joystick::readFilteredAnalog(uint8_t pin) {
-    // Медианный фильтр 5x для лучшего подавления шума
-    int readings[5];
-    for(int i = 0; i < 5; i++) {
+    // Простой медианный фильтр 3x
+    int readings[3];
+    for(int i = 0; i < 3; i++) {
         readings[i] = analogRead(pin);
-        delay(1);
+        delay(2);
     }
     
-    // Сортировка для медианы
-    for(int i = 0; i < 4; i++) {
-        for(int j = 0; j < 4 - i; j++) {
+    // Сортировка пузырьком для медианы
+    for(int i = 0; i < 2; i++) {
+        for(int j = 0; j < 2 - i; j++) {
             if(readings[j] > readings[j+1]) {
                 int temp = readings[j];
                 readings[j] = readings[j+1];
@@ -165,7 +110,7 @@ int Joystick::readFilteredAnalog(uint8_t pin) {
         }
     }
     
-    return readings[2]; // Медиана
+    return readings[1]; // Медиана
 }
 
 ControlData Joystick::getData() {
@@ -173,34 +118,20 @@ ControlData Joystick::getData() {
 }
 
 uint16_t Joystick::calculateCRC(const ControlData& data) {
+    // Простая контрольная сумма
     uint16_t crc = 0;
     const uint8_t* bytes = (const uint8_t*)&data;
     
     for(size_t i = 0; i < sizeof(ControlData) - sizeof(uint16_t); i++) {
-        crc = (crc << 5) + crc + bytes[i]; // Простой полиномиальный CRC
+        crc += bytes[i];
     }
     return crc;
 }
 
 bool Joystick::isConnected() {
     return calibrated && 
-           analogRead(hwConfig.THROTTLE_PIN) > 0 && 
-           analogRead(hwConfig.STEERING_PIN) > 0;
-}
-
-void Joystick::setControlConfig(const ControlConfig& config) {
-    controlConfig = config;
-}
-
-ControlConfig Joystick::getControlConfig() const {
-    return controlConfig;
-}
-
-void Joystick::startCalibration() {
-    calibrating = true;
-    calibrated = false;
-}
-
-bool Joystick::isCalibrating() const {
-    return calibrating;
+           analogRead(config.JOYSTICK1_X_PIN) > 0 && 
+           analogRead(config.JOYSTICK1_Y_PIN) > 0 &&
+           analogRead(config.JOYSTICK2_X_PIN) > 0 && 
+           analogRead(config.JOYSTICK2_Y_PIN) > 0;
 }
