@@ -9,6 +9,13 @@ Joystick joystick;
 // MAC адрес самолета (приемника)
 uint8_t receiverMac[] = {0xEC, 0xE3, 0x34, 0x1A, 0xB1, 0xA8};
 
+// Переменные для неблокирующих таймеров
+unsigned long lastJoystickRead = 0;
+unsigned long lastDataSend = 0;
+unsigned long lastSerialPrint = 0;
+unsigned long ledOffTime = 0;
+bool ledState = false;
+
 // Функция для добавления пира в ESP-NOW
 bool addPeer(const uint8_t* macAddress) {
     esp_now_peer_info_t peerInfo = {};
@@ -53,7 +60,6 @@ void setup() {
   // Вывод информации об устройстве
   printDeviceInfo();
   
-  // Инициализация компонентов
   Serial.println("🔧 Инициализация компонентов...");
   joystick.begin();
   
@@ -94,56 +100,50 @@ void setup() {
 }
 
 void loop() {
-  // Обновляем данные джойстиков
-  joystick.update();
+  unsigned long currentMillis = millis();
+  
+  // Оптимизация обработки джойстиков - читаем каждые 50 мс вместо каждого цикла
+  if (currentMillis - lastJoystickRead >= 50) {
+    joystick.update();
+    lastJoystickRead = currentMillis;
+  }
+  
   ControlData data = joystick.getData();
   
   // Проверка CRC перед отправкой
   static uint16_t lastCRC = 0;
   uint16_t currentCRC = joystick.calculateCRC(data);
   
-  // Отправляем данные, если они изменились
-  if (currentCRC == data.crc && currentCRC != lastCRC) {
-    esp_err_t result = esp_now_send(receiverMac, (uint8_t *)&data, sizeof(data));
-    if (result == ESP_OK) {
-      // Быстрая индикация успешной отправки
-      digitalWrite(2, HIGH);
-      delay(5);
-      digitalWrite(2, LOW);
-    } else {
-      Serial.printf("⚠️  Ошибка отправки данных: %d\n", result);
-    }
-    lastCRC = currentCRC;
-  }
-  
-  // Вывод отладочной информации каждые 500 мс
-  static unsigned long lastPrint = 0;
-  if (millis() - lastPrint > 500) {
-    Serial.printf("🎮 Джойстик1: X=%-4d Y=%-4d %s\n", 
-                data.xAxis1, data.yAxis1, 
-                data.button1 ? "[BTN1]" : "      ");
-    Serial.printf("🎮 Джойстик2: X=%-4d Y=%-4d %s\n", 
-                data.xAxis2, data.yAxis2,
-                data.button2 ? "[BTN2]" : "      ");
-    Serial.printf("🔄 Доп.кнопки: 0x%02X CRC: %04X\n", 
-                data.buttons, data.crc);
+  // Отправляем данные, если они изменились и прошло достаточно времени
+  if (currentCRC == data.crc && currentCRC != lastCRC && 
+      currentMillis - lastDataSend >= 80) {
     
-    // Статус соединения (проверяем наличие пира)
-    if (esp_now_is_peer_exist(receiverMac)) {
-      Serial.println("📡 Связь: ОК");
+    esp_err_t result = esp_now_send(receiverMac, (uint8_t *)&data, sizeof(data));
+    
+    // Неблокирующая индикация LED
+    if (result == ESP_OK) {
+      digitalWrite(2, HIGH);
+      ledState = true;
+      ledOffTime = currentMillis + 50; // Короткая индикация 50 мс
     } else {
-      Serial.println("❌ Связь: НЕТ");
+      Serial.printf("⚠️  Ошибка отправки: %d\n", result);
     }
-    Serial.println("---");
-    lastPrint = millis();
+    
+    lastCRC = currentCRC;
+    lastDataSend = currentMillis;
   }
   
-  // Медленное мигание в режиме работы
-  static unsigned long lastBlink = 0;
-  if (millis() - lastBlink > 1000) {
-    digitalWrite(2, !digitalRead(2));
-    lastBlink = millis();
+  // Управление LED (неблокирующее)
+  if (ledState && currentMillis > ledOffTime) {
+    digitalWrite(2, LOW);
+    ledState = false;
   }
   
-  delay(10);
+  // Оптимизация серийного вывода - выводим каждые 30 секунд
+  if (currentMillis - lastSerialPrint >= 30000) {
+    Serial.printf("J1:%d,%d J2:%d,%d\n", 
+                data.xAxis1, data.yAxis1, 
+                data.xAxis2, data.yAxis2);
+    lastSerialPrint = currentMillis;
+  }
 }
