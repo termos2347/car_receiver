@@ -1,4 +1,4 @@
-// ПУЛЬТ УПРАВЛЕНИЯ (передатчик)
+// ПУЛЬТ УПРАВЛЕНИЯ (передатчик) - ОПТИМИЗИРОВАННАЯ ВЕРСИЯ
 #include <esp_now.h>
 #include <WiFi.h>
 #include "Core/Types.h"
@@ -7,14 +7,36 @@
 Joystick joystick;
 
 // MAC адрес самолета (приемника)
-uint8_t receiverMac[] = {0xEC, 0xE3, 0x34, 0x1A, 0xB1, 0xA8};
+const uint8_t receiverMac[] = {0xEC, 0xE3, 0x34, 0x1A, 0xB1, 0xA8};
+
+// Глобальные переменные для оптимизации
+static ControlData currentData;
+static uint16_t lastCRC = 0;
+static bool dataChanged = false;
+
+// Тайминги (в мс)
+enum Timing {
+  JOYSTICK_READ_INTERVAL = 30,    // Чтение джойстиков
+  DATA_SEND_INTERVAL = 40,        // Отправка данных
+  SERIAL_PRINT_INTERVAL = 30000,  // Вывод в Serial
+  LED_INDICATION_TIME = 25        // Индикация LED
+};
 
 // Переменные для неблокирующих таймеров
-unsigned long lastJoystickRead = 0;
-unsigned long lastDataSend = 0;
-unsigned long lastSerialPrint = 0;
-unsigned long ledOffTime = 0;
-bool ledState = false;
+static unsigned long lastJoystickRead = 0;
+static unsigned long lastDataSend = 0;
+static unsigned long lastSerialPrint = 0;
+static unsigned long ledOffTime = 0;
+static bool ledState = false;
+
+// Прототипы функций с правильными параметрами
+bool addPeer(const uint8_t* macAddress);
+void optimizedDeviceInfo();
+void setupIndication();
+void handleJoystickReading();
+void handleDataSending();
+void handleLEDIndication();
+void handleSerialOutput();
 
 // Функция для добавления пира в ESP-NOW
 bool addPeer(const uint8_t* macAddress) {
@@ -23,127 +45,146 @@ bool addPeer(const uint8_t* macAddress) {
     peerInfo.channel = 0;
     peerInfo.encrypt = false;
     
-    esp_err_t result = esp_now_add_peer(&peerInfo);
-    if (result == ESP_OK) {
-        Serial.println("✅ Пир успешно добавлен");
-        return true;
-    } else {
-        Serial.printf("❌ Ошибка добавления пира: %d\n", result);
-        return false;
-    }
+    return esp_now_add_peer(&peerInfo) == ESP_OK;
 }
 
-void printDeviceInfo() {
-  Serial.println("🎮 ===== ИНФОРМАЦИЯ ПУЛЬТА =====");
-  Serial.print("MAC адрес: ");
+// Оптимизированный вывод информации об устройстве
+void optimizedDeviceInfo() {
+  Serial.println("🎮 Пульт управления запущен");
+  Serial.print("MAC: ");
   Serial.println(WiFi.macAddress());
-  Serial.print("Chip ID: 0x");
-  Serial.println(ESP.getEfuseMac(), HEX);
-  Serial.print("Частота CPU: ");
-  Serial.print(ESP.getCpuFreqMHz());
-  Serial.println(" MHz");
-  Serial.print("Flash размер: ");
-  Serial.print(ESP.getFlashChipSize() / (1024 * 1024));
-  Serial.println(" MB");
-  Serial.print("Свободная память: ");
-  Serial.print(ESP.getFreeHeap() / 1024);
-  Serial.println(" KB");
-  Serial.println("================================");
+  Serial.print("Free RAM: ");
+  Serial.println(ESP.getFreeHeap());
+}
+
+// Индикация готовности
+void setupIndication() {
+  pinMode(2, OUTPUT);
+  for(int i = 0; i < 3; i++) {
+    digitalWrite(2, HIGH);
+    delay(80);  // Укороченные задержки
+    digitalWrite(2, LOW);
+    delay(80);
+  }
 }
 
 void setup() {
   Serial.begin(115200);
-  delay(1000);
+  delay(800);  // Уменьшенная задержка
   
-  Serial.println("🎮 Запуск пульта управления...");
+  Serial.println("🎮 Запуск пульта...");
   
-  // Вывод информации об устройстве
-  printDeviceInfo();
+  // Оптимизированная информация об устройстве
+  optimizedDeviceInfo();
   
-  Serial.println("🔧 Инициализация компонентов...");
+  // Инициализация компонентов
   joystick.begin();
   
-  // Инициализация ESP-NOW в режиме передатчика
-  Serial.println("📡 Инициализация ESP-NOW...");
+  // Настройка WiFi и ESP-NOW
   WiFi.mode(WIFI_STA);
+  
+  // Оптимизация WiFi для снижения энергопотребления
+  WiFi.setSleep(true);  // Разрешить сон WiFi
+  WiFi.setTxPower(WIFI_POWER_19_5dBm);  // Уменьшить мощность передачи
+  
   if (esp_now_init() != ESP_OK) {
-    Serial.println("❌ Ошибка инициализации ESP-NOW");
+    Serial.println("❌ Ошибка ESP-NOW");
     return;
   }
   
-  // Добавляем самолет как пир
-  Serial.println("⏳ Добавление самолета...");
-  
+  // Добавление пира с проверкой
   if (addPeer(receiverMac)) {
-    Serial.print("✅ Самолет добавлен: ");
-    for(int i = 0; i < 6; i++) {
-      Serial.print(receiverMac[i], HEX);
-      if(i < 5) Serial.print(":");
-    }
-    Serial.println();
+    Serial.println("✅ Самолет добавлен");
   } else {
-    Serial.println("❌ Не удалось добавить самолет");
+    Serial.println("❌ Ошибка добавления");
     return;
   }
   
   // Индикация готовности
-  pinMode(2, OUTPUT);
-  for(int i = 0; i < 3; i++) {
-    digitalWrite(2, HIGH);
-    delay(100);
-    digitalWrite(2, LOW);
-    delay(100);
-  }
+  setupIndication();
   
-  Serial.println("🚀 Пульт готов к работе");
-  Serial.println("📡 Ожидание данных джойстиков...");
+  // Инициализация начальных данных
+  currentData = joystick.getData();
+  lastCRC = joystick.calculateCRC(currentData);
+  
+  Serial.println("🚀 Пульт готов");
 }
 
 void loop() {
-  unsigned long currentMillis = millis();
+  const unsigned long currentMillis = millis();
   
-  // Оптимизация обработки джойстиков - читаем каждые 50 мс вместо каждого цикла
-  if (currentMillis - lastJoystickRead >= 50) {
+  // Разделение задач по времени для равномерной нагрузки
+  handleJoystickReading();
+  handleDataSending();
+  handleLEDIndication();
+  handleSerialOutput();
+}
+
+// Обработка чтения джойстиков
+void handleJoystickReading() {
+  const unsigned long currentMillis = millis();
+  if (currentMillis - lastJoystickRead >= JOYSTICK_READ_INTERVAL) {
     joystick.update();
-    lastJoystickRead = currentMillis;
-  }
-  
-  ControlData data = joystick.getData();
-  
-  // Проверка CRC перед отправкой
-  static uint16_t lastCRC = 0;
-  uint16_t currentCRC = joystick.calculateCRC(data);
-  
-  // Отправляем данные, если они изменились и прошло достаточно времени
-  if (currentCRC == data.crc && currentCRC != lastCRC && 
-      currentMillis - lastDataSend >= 80) {
+    ControlData newData = joystick.getData();
     
-    esp_err_t result = esp_now_send(receiverMac, (uint8_t *)&data, sizeof(data));
-    
-    // Неблокирующая индикация LED
-    if (result == ESP_OK) {
-      digitalWrite(2, HIGH);
-      ledState = true;
-      ledOffTime = currentMillis + 50; // Короткая индикация 50 мс
-    } else {
-      Serial.printf("⚠️  Ошибка отправки: %d\n", result);
+    // Проверка изменения данных с deadzone для уменьшения шума
+    const int DEADZONE = 3;
+    if (abs(newData.xAxis1 - currentData.xAxis1) > DEADZONE ||
+        abs(newData.yAxis1 - currentData.yAxis1) > DEADZONE ||
+        abs(newData.xAxis2 - currentData.xAxis2) > DEADZONE ||
+        abs(newData.yAxis2 - currentData.yAxis2) > DEADZONE) {
+      
+      currentData = newData;
+      dataChanged = true;
     }
     
-    lastCRC = currentCRC;
+    lastJoystickRead = currentMillis;
+  }
+}
+
+// Обработка отправки данных
+void handleDataSending() {
+  const unsigned long currentMillis = millis();
+  if (dataChanged && (currentMillis - lastDataSend >= DATA_SEND_INTERVAL)) {
+    // Проверка CRC только если данные изменились
+    uint16_t currentCRC = joystick.calculateCRC(currentData);
+    
+    if (currentCRC == currentData.crc) {
+      esp_err_t result = esp_now_send(receiverMac, (uint8_t *)&currentData, sizeof(currentData));
+      
+      if (result == ESP_OK) {
+        // Активация LED индикации
+        digitalWrite(2, HIGH);
+        ledState = true;
+        ledOffTime = currentMillis + LED_INDICATION_TIME;
+        lastCRC = currentCRC;
+      }
+      // Убрать вывод ошибок в продакшене для экономии ресурсов
+    }
+    
+    dataChanged = false;
     lastDataSend = currentMillis;
   }
-  
-  // Управление LED (неблокирующее)
+}
+
+// Управление LED индикацией
+void handleLEDIndication() {
+  const unsigned long currentMillis = millis();
   if (ledState && currentMillis > ledOffTime) {
     digitalWrite(2, LOW);
     ledState = false;
   }
-  
-  // Оптимизация серийного вывода - выводим каждые 30 секунд
-  if (currentMillis - lastSerialPrint >= 30000) {
-    Serial.printf("J1:%d,%d J2:%d,%d\n", 
-                data.xAxis1, data.yAxis1, 
-                data.xAxis2, data.yAxis2);
+}
+
+// Управление выводом в Serial
+void handleSerialOutput() {
+  const unsigned long currentMillis = millis();
+  if (currentMillis - lastSerialPrint >= SERIAL_PRINT_INTERVAL) {
+    // Минималистичный вывод
+    Serial.printf("J1:%d,%d J2:%d,%d CRC:%u\n", 
+                 currentData.xAxis1, currentData.yAxis1, 
+                 currentData.xAxis2, currentData.yAxis2,
+                 lastCRC);
     lastSerialPrint = currentMillis;
   }
 }
