@@ -1,11 +1,11 @@
-// ПУЛЬТ УПРАВЛЕНИЯ (передатчик) - С DEBUG РЕЖИМОМ
+// ПУЛЬТ УПРАВЛЕНИЯ (передатчик) - ДАННЫЕ ОТПРАВЛЯЮТСЯ ВСЕГДА
 #include <esp_now.h>
 #include <WiFi.h>
 #include "Core/Types.h"
 #include "Input/Joystick.h"
 
 // === НАСТРОЙКИ DEBUG ===
-#define DEBUG_MODE true  // true - отладка, false - полет (минимальный вывод)
+#define DEBUG_MODE true  // Меняй на false перед полетом
 // =======================
 
 Joystick joystick;
@@ -15,19 +15,16 @@ const uint8_t receiverMac[] = {0xEC, 0xE3, 0x34, 0x1A, 0xB1, 0xA8};
 
 // Глобальные переменные
 static ControlData currentData;
-static bool newDataReady = false;
 static unsigned long lastDataTime = 0;
 
 // Тайминги (в мс)
 enum Timing {
-  DATA_PROCESS_INTERVAL = 30,     // Обработка данных
   DATA_SEND_INTERVAL = 40,        // Отправка данных
-  STATUS_PRINT_INTERVAL = 1000,   // Вывод статуса
+  STATUS_PRINT_INTERVAL = 5000,   // Вывод статуса
   LED_INDICATION_TIME = 25        // Индикация LED
 };
 
 // Переменные для неблокирующих таймеров
-static unsigned long lastDataProcess = 0;
 static unsigned long lastDataSend = 0;
 static unsigned long lastStatusPrint = 0;
 static unsigned long ledOffTime = 0;
@@ -38,7 +35,6 @@ static bool connectionStatus = false;
 bool addPeer(const uint8_t* macAddress);
 void printDeviceInfo();
 void setupIndication();
-void handleDataProcessing(unsigned long currentMillis);
 void handleDataSending(unsigned long currentMillis);
 void handleLEDIndication(unsigned long currentMillis);
 void handleStatusOutput(unsigned long currentMillis);
@@ -128,38 +124,21 @@ void loop() {
   const unsigned long currentMillis = millis();
   
   // Разделение задач по времени для равномерной нагрузки
-  handleDataProcessing(currentMillis);
   handleDataSending(currentMillis);
   handleLEDIndication(currentMillis);
   handleStatusOutput(currentMillis);
   handleConnectionCheck(currentMillis);
 }
 
-// Обработка данных джойстиков
-void handleDataProcessing(unsigned long currentMillis) {
-  if (currentMillis - lastDataProcess >= DATA_PROCESS_INTERVAL) {
-    joystick.update();
-    ControlData newData = joystick.getData();
-    
-    // Проверка изменения данных с deadzone
-    const int DEADZONE = 3;
-    if (abs(newData.xAxis1 - currentData.xAxis1) > DEADZONE ||
-        abs(newData.yAxis1 - currentData.yAxis1) > DEADZONE ||
-        abs(newData.xAxis2 - currentData.xAxis2) > DEADZONE ||
-        abs(newData.yAxis2 - currentData.yAxis2) > DEADZONE) {
-      
-      currentData = newData;
-      currentData.crc = joystick.calculateCRC(currentData);
-      newDataReady = true;
-    }
-    
-    lastDataProcess = currentMillis;
-  }
-}
-
-// Отправка данных
+// Отправка данных - ВСЕГДА, без проверки изменений
 void handleDataSending(unsigned long currentMillis) {
-  if (newDataReady && (currentMillis - lastDataSend >= DATA_SEND_INTERVAL)) {
+  if (currentMillis - lastDataSend >= DATA_SEND_INTERVAL) {
+    // ВСЕГДА обновляем данные джойстиков
+    joystick.update();
+    currentData = joystick.getData();
+    currentData.crc = joystick.calculateCRC(currentData);
+    
+    // ВСЕГДА отправляем данные
     esp_err_t result = esp_now_send(receiverMac, (uint8_t *)&currentData, sizeof(currentData));
     
     if (result == ESP_OK) {
@@ -169,20 +148,27 @@ void handleDataSending(unsigned long currentMillis) {
       ledOffTime = currentMillis + LED_INDICATION_TIME;
       lastDataTime = currentMillis;
       
-      // Вывод данных в одинаковом формате (только в debug режиме)
+      // Вывод данных (только в debug режиме)
       #if DEBUG_MODE
         static unsigned long lastDataPrint = 0;
-        if (currentMillis - lastDataPrint > 100) {
-          Serial.printf("J1:%4d,%4d J2:%4d,%4d B1:%d B2:%d CRC:%4d\n", 
+        if (currentMillis - lastDataPrint > 100) { // Ограничиваем частоту вывода
+          Serial.printf("J1:%4d,%4d J2:%4d,%4d B1:%d B2:%d\n", 
                        currentData.xAxis1, currentData.yAxis1, 
                        currentData.xAxis2, currentData.yAxis2,
-                       currentData.button1, currentData.button2, currentData.crc);
+                       currentData.button1, currentData.button2);
           lastDataPrint = currentMillis;
+        }
+      #endif
+    } else {
+      #if DEBUG_MODE
+        static unsigned long lastErrorPrint = 0;
+        if (currentMillis - lastErrorPrint > 1000) {
+          Serial.println("❌ Ошибка отправки");
+          lastErrorPrint = currentMillis;
         }
       #endif
     }
     
-    newDataReady = false;
     lastDataSend = currentMillis;
   }
 }
@@ -199,14 +185,16 @@ void handleLEDIndication(unsigned long currentMillis) {
 void handleStatusOutput(unsigned long currentMillis) {
   #if DEBUG_MODE
     if (currentMillis - lastStatusPrint >= STATUS_PRINT_INTERVAL) {
+      // УБРАН ВЫВОД СТАТИСТИКИ - оставляем только критически важное
       if (connectionStatus) {
         if (currentMillis - lastDataTime < 2000) {
-          Serial.println("✅ Связь стабильная, данные отправляются");
+          // Краткий статус вместо подробного
+          Serial.println("✅ Связь OK");
         } else {
-          Serial.println("⚠️  Самолет подключен, но данные не отправляются");
+          Serial.println("⚠️  Нет связи с самолетом");
         }
       } else {
-        Serial.println("❌ Самолет не зарегистрирован");
+        Serial.println("❌ Самолет не найден");
       }
       lastStatusPrint = currentMillis;
     }
