@@ -1,4 +1,4 @@
-// ПУЛЬТ УПРАВЛЕНИЯ (передатчик) - ФИНАЛЬНАЯ ВЕРСИЯ
+// ПУЛЬТ УПРАВЛЕНИЯ (передатчик) - С ВЫВОДОМ MAC-АДРЕСОВ
 #include <esp_now.h>
 #include <WiFi.h>
 #include "Core/Types.h"
@@ -20,6 +20,14 @@ enum Timing {
   LED_INDICATION_TIME = 25
 };
 
+// Функция для форматированного вывода MAC-адреса
+void printMacAddress(const uint8_t* mac, const char* label) {
+  #if DEBUG_MODE
+    Serial.printf("%s: %02X:%02X:%02X:%02X:%02X:%02X\n", 
+                 label, mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
+  #endif
+}
+
 bool addPeer(const uint8_t* macAddress) {
     esp_now_peer_info_t peerInfo = {};
     memcpy(peerInfo.peer_addr, macAddress, 6);
@@ -32,7 +40,16 @@ void setup() {
   #if DEBUG_MODE
     Serial.begin(115200);
     delay(500);
-    Serial.println("🎮 Пульт запущен");
+    Serial.println("🎮 ПУЛЬТ УПРАВЛЕНИЯ ЗАПУЩЕН");
+    Serial.println("========================");
+  #endif
+  
+  // Вывод MAC-адресов ДО инициализации компонентов
+  #if DEBUG_MODE
+    Serial.print("MAC пульта:    ");
+    Serial.println(WiFi.macAddress());
+    printMacAddress(receiverMac, "MAC самолета");
+    Serial.println("------------------------");
   #endif
   
   joystick.begin();
@@ -40,12 +57,21 @@ void setup() {
   
   if (esp_now_init() != ESP_OK) {
     #if DEBUG_MODE
-      Serial.println("❌ Ошибка ESP-NOW");
+      Serial.println("❌ Ошибка инициализации ESP-NOW");
     #endif
     return;
   }
   
-  addPeer(receiverMac);
+  if (addPeer(receiverMac)) {
+    #if DEBUG_MODE
+      Serial.println("✅ Самолет добавлен в пиры");
+    #endif
+  } else {
+    #if DEBUG_MODE
+      Serial.println("❌ Ошибка добавления самолета");
+    #endif
+  }
+  
   pinMode(2, OUTPUT);
   
   // Индикация готовности
@@ -57,7 +83,8 @@ void setup() {
   }
   
   #if DEBUG_MODE
-    Serial.println("🚀 Пульт готов");
+    Serial.println("🚀 Пульт готов к работе");
+    Serial.println("========================");
   #endif
 }
 
